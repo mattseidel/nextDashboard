@@ -1,117 +1,71 @@
 import bcrypt from 'bcrypt';
-import postgres from 'postgres';
+import prisma from '../lib/prisma';
 import { invoices, customers, revenue, users } from '../lib/placeholder-data';
+import { InvoiceStatus } from '@prisma/client';
 
-const sql = postgres(process.env.POSTGRES_URL!, { ssl: 'require' });
+
 
 async function seedUsers() {
-  await sql`CREATE EXTENSION IF NOT EXISTS "uuid-ossp"`;
-  await sql`
-    CREATE TABLE IF NOT EXISTS users (
-      id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
-      name VARCHAR(255) NOT NULL,
-      email TEXT NOT NULL UNIQUE,
-      password TEXT NOT NULL
-    );
-  `;
-
-  const insertedUsers = await Promise.all(
-    users.map(async (user) => {
-      const hashedPassword = await bcrypt.hash(user.password, 10);
-      return sql`
-        INSERT INTO users (id, name, email, password)
-        VALUES (${user.id}, ${user.name}, ${user.email}, ${hashedPassword})
-        ON CONFLICT (id) DO NOTHING;
-      `;
-    }),
-  );
-
-  return insertedUsers;
+  // No es necesario crear tablas, Prisma Migrate se encarga de eso.
+  const insertedUsers = await prisma.user.createMany({
+    data: await Promise.all(
+      users.map(async (user) => ({
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        password: await bcrypt.hash(user.password, 10),
+      })),
+    ),
+    skipDuplicates: true, // Evita errores si los usuarios ya existen
+  });
+  console.log(`Seeded ${insertedUsers.count} users`);
 }
 
 async function seedInvoices() {
-  await sql`CREATE EXTENSION IF NOT EXISTS "uuid-ossp"`;
+  // Transforma las fechas de string a objetos Date para Prisma
+  // Import InvoiceStatus from your Prisma client
 
-  await sql`
-    CREATE TABLE IF NOT EXISTS invoices (
-      id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
-      customer_id UUID NOT NULL,
-      amount INT NOT NULL,
-      status VARCHAR(255) NOT NULL,
-      date DATE NOT NULL
-    );
-  `;
+  const invoicesWithDates = invoices.map((invoice) => ({
+    ...invoice,
+    date: new Date(invoice.date),
+    status: invoice.status as InvoiceStatus,
+  }));
 
-  const insertedInvoices = await Promise.all(
-    invoices.map(
-      (invoice) => sql`
-        INSERT INTO invoices (customer_id, amount, status, date)
-        VALUES (${invoice.customer_id}, ${invoice.amount}, ${invoice.status}, ${invoice.date})
-        ON CONFLICT (id) DO NOTHING;
-      `,
-    ),
-  );
-
-  return insertedInvoices;
+  const insertedInvoices = await prisma.invoice.createMany({
+    data: invoicesWithDates,
+    skipDuplicates: true,
+  });
+  console.log(`Seeded ${insertedInvoices.count} invoices`);
 }
 
 async function seedCustomers() {
-  await sql`CREATE EXTENSION IF NOT EXISTS "uuid-ossp"`;
-
-  await sql`
-    CREATE TABLE IF NOT EXISTS customers (
-      id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
-      name VARCHAR(255) NOT NULL,
-      email VARCHAR(255) NOT NULL,
-      image_url VARCHAR(255) NOT NULL
-    );
-  `;
-
-  const insertedCustomers = await Promise.all(
-    customers.map(
-      (customer) => sql`
-        INSERT INTO customers (id, name, email, image_url)
-        VALUES (${customer.id}, ${customer.name}, ${customer.email}, ${customer.image_url})
-        ON CONFLICT (id) DO NOTHING;
-      `,
-    ),
-  );
-
-  return insertedCustomers;
+  const insertedCustomers = await prisma.customer.createMany({
+    data: customers,
+    skipDuplicates: true,
+  });
+  console.log(`Seeded ${insertedCustomers.count} customers`);
 }
 
 async function seedRevenue() {
-  await sql`
-    CREATE TABLE IF NOT EXISTS revenue (
-      month VARCHAR(4) NOT NULL UNIQUE,
-      revenue INT NOT NULL
-    );
-  `;
-
-  const insertedRevenue = await Promise.all(
-    revenue.map(
-      (rev) => sql`
-        INSERT INTO revenue (month, revenue)
-        VALUES (${rev.month}, ${rev.revenue})
-        ON CONFLICT (month) DO NOTHING;
-      `,
-    ),
-  );
-
-  return insertedRevenue;
+  const insertedRevenue = await prisma.revenue.createMany({
+    data: revenue,
+    skipDuplicates: true,
+  });
+  console.log(`Seeded ${insertedRevenue.count} revenue entries`);
 }
 
 export async function GET() {
   try {
-    const result = await sql.begin((sql) => [
-      seedUsers(),
-      seedCustomers(),
-      seedInvoices(),
-      seedRevenue(),
-    ]);
+    await seedUsers();
+    await seedCustomers();
+    await seedInvoices();
+    await seedRevenue();
 
     return Response.json({ message: 'Database seeded successfully' });
   } catch (error) {
-    return Response.json({ error }, { status: 500 });
+    return Response.json(
+      { message: 'Failed to seed database', error: (error as Error).message },
+      { status: 500 },
+    );
   }
 }
